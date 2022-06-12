@@ -1,6 +1,7 @@
 import traceback
+from turtle import update
 
-INPUT_FILE = "in2.txt"
+INPUT_FILE = "in3.txt"
 LOCK_TABLE_FILE = "lock_table.txt"
 
 class Transaction:
@@ -79,7 +80,7 @@ class Lock_Manager:
 
         if lock:
             modo_block = lock[0]
-            tr_id = lock[1]
+            # tr_id = lock[1] # TODO: REMOVER
             if modo_block == 'S':
                 # D.bloqueio = 'S'
                 self.Lock_Table.append((it_data, 'S', tr_id))
@@ -97,8 +98,7 @@ class Lock_Manager:
             self.Lock_Table.append((it_data, 'S', tr_id))
 
         self.saveLockTable()
-
-    
+   
     # LX(tr, D) - Solicitar bloqueio exclusivo
     def requestExclusiveLock(self, tr_id, it_data):
         # lock = (modo bloqueio, tr_id) ou None(sem bloqueio)
@@ -108,7 +108,7 @@ class Lock_Manager:
 
         if lock:
             modo_block = lock[0]
-            tr_id = lock[1]
+            # tr_id = lock[1]
             if modo_block == 'S':
                 # D.bloqueio = 'S'
                 self.Lock_Table = [x for x in self.Lock_Table if x[0] != it_data ]
@@ -139,6 +139,20 @@ class Lock_Manager:
             self.Lock_Table = [x for x in self.Lock_Table if not (x[0] == it_data and x[2] == tr_id)]
 
         self.saveLockTable()
+
+    def unqueue(self, item):
+        if item in self.Wait_Q:
+            if len(self.Wait_Q[item]) == 1:
+                del self.Wait_Q[item]
+                return None
+            if len(self.Wait_Q[item]) > 0:
+                return self.Wait_Q[item].pop(0)
+
+        return None
+    
+    def removeFromLockTable(self, index):
+        element = self.Lock_Table.pop(int(index))
+        return element
 
 
 def getParamString(param):
@@ -208,20 +222,28 @@ def main():
             # Operação de leitura
             res = lock_manager.requestSharedLock(tr_id, it_data)
 
-
         elif op_type == 'w':
             # Operação de escrita
             res = lock_manager.requestExclusiveLock(tr_id, it_data)
+
         elif op_type == 'C':
-            # Commit
-            pass
+            index = 0
+            lock_manager.getLockTable()
+
+            for block in lock_manager.Lock_Table:
+                if block[2] == tr_id:
+                    if len(lock_manager.Lock_Table) > 0:
+                        unlocked_block = lock_manager.removeFromLockTable(index)
+                        unlocked_item = unlocked_block[0]
+                        lock_manager.unqueue(unlocked_item)
+                        lock_manager.requestUnlock(tr_id, block[0])
+                        lock_manager.saveLockTable()
+                index += 1
 
     print("Historia: ", history)
     lock_manager.getLockTable()
     print("Lock Table: ", lock_manager.Lock_Table)
     print("Wait_Queue", lock_manager.Wait_Q)
-
-
 
 
 main()
