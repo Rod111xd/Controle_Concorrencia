@@ -280,92 +280,15 @@ def clearLockTable():
     f.write("")
     f.close()
 
-
-# Sem técnica de prevenção
-def semTecnicaPrevencao(tr_manager, lock_manager, operations):
-    history = []
-    response = 'OK'
-
-    for n_op, op in enumerate(operations):
-        op_type = op[0]
-        tr_id = op[1]
-        it_data = op[2] if len(op) > 2 else None
-        
-        if op_type == 'BT':
-            # Começa uma nova transação
-            tr_manager.newTransaction(tr_id)
-            history.append(op)
-
-        elif op_type == 'r':
-            # Operação de leitura
-
-            trState = lock_manager.tr_manager.transactions[tr_id].state
-            if trState == 'active':
-                response, nowWaiting = lock_manager.requestSharedLock(tr_id, it_data)
-                
-                if response == 'OK':
-                    history.append(op)
-                elif response == 'POSTERGADA':
-                    lock_manager.tr_manager.transactions[tr_id].postergadas.append(op)
-
-            elif trState == 'wait':
-                # Caso o estado da transação esteja em espera, postergar
-                lock_manager.tr_manager.transactions[tr_id].postergadas.append(op)
-
-        elif op_type == 'w':
-            # Operação de escrita
-
-            trState = lock_manager.tr_manager.transactions[tr_id].state
-            if trState == 'active':
-                response, nowWaiting = lock_manager.requestExclusiveLock(tr_id, it_data)
-
-                if response == 'OK':
-                    history.append(op)
-                elif response == 'POSTERGADA':
-                    lock_manager.tr_manager.transactions[tr_id].postergadas.append(op)
-
-            elif trState == 'wait':
-                # Caso o estado da transação esteja em espera, postergar
-                lock_manager.tr_manager.transactions[tr_id].postergadas.append(op)
-
-        elif op_type == 'C':
-
-            trState = lock_manager.tr_manager.transactions[tr_id].state
-            if trState == 'active':
-                # Caso o estado da transação esteja ativa (sem bloqueio), executar normalmente
-                lock_manager.getLockTable()
-
-                for index, block in enumerate(lock_manager.Lock_Table):
-                    if block[2] == tr_id:
-                        if len(lock_manager.Lock_Table) > 0:
-                            unlocked_block = lock_manager.removeFromLockTable(index)
-                            unlocked_item = unlocked_block[0]
-                            lock_manager.unqueue(unlocked_item)
-                            lock_manager.requestUnlock(tr_id, block[0])
-
-                lock_manager.saveLockTable()
-
-            elif trState == 'wait':
-                # Caso o estado da transação esteja em espera, postergar
-                response = 'POSTERGADA'
-                lock_manager.tr_manager.transactions[tr_id].postergadas.append(op)
-            
-
-        if DEBUG:
-            lock_manager.getLockTable()
-            print(n_op+1, ": ", op, response, "      Lock Table: ", lock_manager.Lock_Table, "      Wait_Q: ", lock_manager.Wait_Q)
-        else:
-            print(n_op+1, ": ", op, response)
-
-    return history
-
 # Técnica de prevenção Wait-Die
-def waitDie(tr_manager, lock_manager, operations):
+def waitDie(tr_manager, lock_manager, operations, initialOpNumber=0):
     history = []
     response = 'OK'
-    graph = ""
-
-    for n_op, op in enumerate(operations):
+    
+    n_op = initialOpNumber
+    
+    for op in operations:
+        graph = ""
         op_type = op[0]
         tr_id = op[1]
         it_data = op[2] if len(op) > 2 else None
@@ -390,7 +313,7 @@ def waitDie(tr_manager, lock_manager, operations):
                 elif response == 'DEADLOCK':
                     graph = lock_manager.formatGraph(conflict)
                     # LÓGICA DO WAITDIE
-                    print(str(n_op+1) + ": DEADLOCK!")
+                    print("DEADLOCK iminente na operação " + str(n_op+1), "    " + graph)
                     #return history
 
             elif trState == 'wait':
@@ -412,7 +335,7 @@ def waitDie(tr_manager, lock_manager, operations):
                 elif response == 'DEADLOCK':
                     graph = lock_manager.formatGraph(conflict)
                     # LÓGICA DO WAITDIE
-                    print(str(n_op+1) + ": DEADLOCK!")
+                    print("DEADLOCK iminente na operação " + str(n_op+1), "    " + graph)
                     #return history
 
             elif trState == 'wait':
@@ -448,8 +371,19 @@ def waitDie(tr_manager, lock_manager, operations):
         else:
             print(n_op+1, ": ", op, response, graph)
 
+        n_op += 1
+
     return history
 
+
+def formatHistory(history):
+    out = ""
+    for h in history:
+        if len(h) > 2:
+            out += h[0] + h[1] + "(" + h[2] + ")" + "   "
+        else:
+            out += h[0] + "(" + h[1] + ")" + "   "
+    return out
 
 def main():
     operations = readAndParseInput()
@@ -467,7 +401,7 @@ def main():
     lock_manager = Lock_Manager(tr_manager)
     print("Técnica WAIT-DIE")
     history = waitDie(tr_manager, lock_manager, operations.copy())
-    print("\nHistoria: ", history)
+    print("\nHistoria: ", formatHistory(history))
 
     
 
