@@ -3,7 +3,7 @@ from turtle import update
 
 INPUT_FILE = "deadlock.txt"
 LOCK_TABLE_FILE = "lock_table.txt"
-DEBUG = True
+DEBUG = False
 
 class Transaction:
     def __init__(self, id, ts):
@@ -21,9 +21,6 @@ class Tr_Manager:
         self.Tr += 1
         self.transactions[id] = Transaction(id, self.Tr)
 
-    def newConflict(self, tr_id_1, tr_id_2):
-        if (tr_id_1, tr_id_2) not in self.conflicts:
-            self.conflicts.append((tr_id_1, tr_id_2))
 
     
 class Lock_Manager:
@@ -72,11 +69,34 @@ class Lock_Manager:
         r = None
         for lock in self.Lock_Table:
             if lock[0] == it_data:
+                # (modo_bloqueio, tr_id)
                 r = (lock[1], lock[2])
                 break
         self.Lock_Table = []
 
         return r
+
+    # Adicionar novo conflito na lista de conflitos
+    def newConflict(self, conflict):
+        inverse = (conflict[1], conflict[0])
+        if inverse in self.tr_manager.conflicts:
+            # Deadlock iminente
+            return True
+        
+        if conflict not in self.tr_manager.conflicts:
+            self.tr_manager.conflicts.append(conflict)
+        # Conflito adicionado, não vai gerar deadlock
+        return False
+
+    # Formatar o print do grafo de conflitos
+    def formatGraph(self, n_conf):
+        confs = self.tr_manager.conflicts.copy()
+        if n_conf not in confs:
+            confs.append(n_conf)
+        out = ""
+        for c in confs:
+            out += "    " + c[0] + "--->" + c[1]
+        return out
 
     # LS(tr, D) - Solicitar bloqueio compartilhado
     def requestSharedLock(self, tr_id, it_data):
@@ -87,12 +107,21 @@ class Lock_Manager:
 
         if lock:
             modo_block = lock[0]
-            # tr_id = lock[1] # TODO: REMOVER
+            tr_id_lock = lock[1]
             if modo_block == 'S':
                 # D.bloqueio = 'S'
                 self.Lock_Table.append((it_data, 'S', tr_id))
             elif modo_block == 'X':
                 # D.bloqueio = 'X'
+
+                # Caso a transacao T em questão já possua um LX, não gera conflito (TODO:ISSO ESTÁ CERTO?)
+                if tr_id_lock != tr_id:
+                    conflict = (tr_id_lock, tr_id)
+
+                    # Adicionar conflito à lista de conflitos
+                    if self.newConflict(conflict):
+                        # A requisição causará um ciclo de conflitos (deadlock)
+                        return 'DEADLOCK', conflict
 
                 isTrWaiting = self.tr_manager.transactions[tr_id].state == 'wait'
 
@@ -107,15 +136,15 @@ class Lock_Manager:
 
                 if not isTrWaiting:
                     # Transação acabou de mudar para o estado 'wait'
-                    return 'POSTERGADA', True
-                return 'POSTERGADA', False
+                    return 'POSTERGADA', conflict
+                return 'POSTERGADA', None
         else:
             # D.bloqueio = 'U'
             self.Lock_Table.append((it_data, 'S', tr_id))
 
         self.saveLockTable()
 
-        return 'OK', False
+        return 'OK', None
    
     # LX(tr, D) - Solicitar bloqueio exclusivo
     def requestExclusiveLock(self, tr_id, it_data):
@@ -126,13 +155,30 @@ class Lock_Manager:
 
         if lock:
             modo_block = lock[0]
-            # tr_id = lock[1]
+            tr_id_lock = lock[1]
             if modo_block == 'S':
                 # D.bloqueio = 'S'
+
+                # Caso a transacao T em questão já possua um LS, não gera conflito (TODO: ISSO ESTÁ CERTO?)
+                if tr_id_lock != tr_id:
+                    conflict = (tr_id_lock, tr_id)
+
+                    if self.newConflict((tr_id_lock, tr_id)):
+                        # A requisição causará um ciclo de conflitos (deadlock)
+                        return 'DEADLOCK', conflict
+
                 self.Lock_Table = [x for x in self.Lock_Table if x[0] != it_data ]
                 self.Lock_Table.append((it_data, 'X', tr_id))
             elif modo_block == 'X':
                 # D.bloqueio = 'X'
+
+                # Caso a transacao T em questão já possua um LX, não gera conflito (TODO: ISSO ESTÁ CERTO?)
+                if tr_id_lock != tr_id:
+                    conflict = (tr_id_lock, tr_id)
+
+                    if self.newConflict((tr_id_lock, tr_id)):
+                        # A requisição causará um ciclo de conflitos (deadlock)
+                        return 'DEADLOCK', conflict
 
                 isTrWaiting = self.tr_manager.transactions[tr_id].state == 'wait'
 
@@ -147,8 +193,8 @@ class Lock_Manager:
 
                 if not isTrWaiting:
                     # Transação acabou de mudar para o estado 'wait'
-                    return 'POSTERGADA', True
-                return 'POSTERGADA', False
+                    return 'POSTERGADA', conflict
+                return 'POSTERGADA', None
 
         else:
             # D.bloqueio = 'U'
@@ -156,7 +202,7 @@ class Lock_Manager:
 
         self.saveLockTable()
 
-        return 'OK', False
+        return 'OK', None
 
     # U(Tr, D) - Solicitar desbloqueio para tal dado e transação
     def requestUnlock(self, tr_id, it_data):
@@ -317,6 +363,7 @@ def semTecnicaPrevencao(tr_manager, lock_manager, operations):
 def waitDie(tr_manager, lock_manager, operations):
     history = []
     response = 'OK'
+    graph = ""
 
     for n_op, op in enumerate(operations):
         op_type = op[0]
@@ -333,16 +380,18 @@ def waitDie(tr_manager, lock_manager, operations):
 
             trState = lock_manager.tr_manager.transactions[tr_id].state
             if trState == 'active':
-                response, nowWaiting = lock_manager.requestSharedLock(tr_id, it_data)
-
-                if nowWaiting:
-                    # Caso transação tenha ido para o estado 'wait'
-                    print("Transação ", tr_id, "ROLLBACKED")
+                response, conflict = lock_manager.requestSharedLock(tr_id, it_data)
                 
                 if response == 'OK':
                     history.append(op)
                 elif response == 'POSTERGADA':
+                    graph = lock_manager.formatGraph(conflict)
                     lock_manager.tr_manager.transactions[tr_id].postergadas.append(op)
+                elif response == 'DEADLOCK':
+                    graph = lock_manager.formatGraph(conflict)
+                    # LÓGICA DO WAITDIE
+                    print(str(n_op+1) + ": DEADLOCK!")
+                    #return history
 
             elif trState == 'wait':
                 # Caso o estado da transação esteja em espera, postergar
@@ -353,16 +402,18 @@ def waitDie(tr_manager, lock_manager, operations):
 
             trState = lock_manager.tr_manager.transactions[tr_id].state
             if trState == 'active':
-                response, nowWaiting = lock_manager.requestExclusiveLock(tr_id, it_data)
-
-                if nowWaiting:
-                    # Caso transação tenha ido para o estado 'wait'
-                    print("Transação ", tr_id, "ROLLBACKED")
+                response, conflict = lock_manager.requestExclusiveLock(tr_id, it_data)
 
                 if response == 'OK':
                     history.append(op)
                 elif response == 'POSTERGADA':
+                    graph = lock_manager.formatGraph(conflict)
                     lock_manager.tr_manager.transactions[tr_id].postergadas.append(op)
+                elif response == 'DEADLOCK':
+                    graph = lock_manager.formatGraph(conflict)
+                    # LÓGICA DO WAITDIE
+                    print(str(n_op+1) + ": DEADLOCK!")
+                    #return history
 
             elif trState == 'wait':
                 # Caso o estado da transação esteja em espera, postergar
@@ -393,9 +444,9 @@ def waitDie(tr_manager, lock_manager, operations):
 
         if DEBUG:
             lock_manager.getLockTable()
-            print(n_op+1, ": ", op, response, "      Lock Table: ", lock_manager.Lock_Table, "      Wait_Q: ", lock_manager.Wait_Q)
+            print(n_op+1, ": ", op, response, graph, "      Lock Table: ", lock_manager.Lock_Table, "      Wait_Q: ", lock_manager.Wait_Q)
         else:
-            print(n_op+1, ": ", op, response)
+            print(n_op+1, ": ", op, response, graph)
 
     return history
 
@@ -410,14 +461,6 @@ def main():
 
     print(operations)
     print()
-
-    # SEM TÉCNICA DE PREVENÇÃO
-    tr_manager = Tr_Manager()
-    lock_manager = Lock_Manager(tr_manager)
-    print("Sem técnica de prevenção")
-    history = semTecnicaPrevencao(tr_manager, lock_manager, operations.copy())
-    print("\nHistoria: ", history)
-    print("\n\n")
 
     # WAIT-DIE
     tr_manager = Tr_Manager()
