@@ -1,23 +1,25 @@
 import traceback
 from turtle import update
 
-INPUT_FILE = "in3.txt"
+INPUT_FILE = "deadlock.txt"
 LOCK_TABLE_FILE = "lock_table.txt"
+DEBUG = True
 
 class Transaction:
     def __init__(self, id, ts):
         self.Id = id
         self.Ts = ts
         self.state = 'active'
+        self.postergadas = []
 
 class Tr_Manager:
     Tr = 0
-    transactions = []
+    transactions = {}
     conflicts = [] # (tr_id_1, tr_id_2); arestas de conflito
 
     def newTransaction(self, id):
         self.Tr += 1
-        self.transactions.append(Transaction(id, self.Tr))
+        self.transactions[id] = Transaction(id, self.Tr)
 
     def newConflict(self, tr_id_1, tr_id_2):
         if (tr_id_1, tr_id_2) not in self.conflicts:
@@ -30,8 +32,13 @@ class Lock_Manager:
     # WQ: 'item_dado': [(id transacao, modo de bloqueio), ...]
     Wait_Q = {}
 
+    def __init__(self, tr_manager):
+        self.tr_manager = tr_manager
+
     # Coloca o Lock_Table na memória
     def getLockTable(self):
+        self.Lock_Table = []
+
         try:
             f = open(LOCK_TABLE_FILE, "r")
             content = f.read().split("\n")
@@ -58,7 +65,7 @@ class Lock_Manager:
         f.close()
         self.Lock_Table = []
         
-    # Retorna tipo do bloqueio do dado, se estiver bloqueado retorna None
+    # Retorna tipo do bloqueio do dado, se não estiver bloqueado retorna None
     def checkLock(self, it_data):
         self.getLockTable()
 
@@ -87,17 +94,28 @@ class Lock_Manager:
             elif modo_block == 'X':
                 # D.bloqueio = 'X'
 
+                isTrWaiting = self.tr_manager.transactions[tr_id].state == 'wait'
+
+                # Atualizar estado da transcao ('wait')
+                self.tr_manager.transactions[tr_id].state = 'wait'
+
                 # Adicionar na lista da fila para o dado D
                 try:
                     self.Wait_Q[it_data].append((tr_id, 'S'))
                 except:
                     self.Wait_Q[it_data] = [(tr_id, 'S')]
 
+                if not isTrWaiting:
+                    # Transação acabou de mudar para o estado 'wait'
+                    return 'POSTERGADA', True
+                return 'POSTERGADA', False
         else:
             # D.bloqueio = 'U'
             self.Lock_Table.append((it_data, 'S', tr_id))
 
         self.saveLockTable()
+
+        return 'OK', False
    
     # LX(tr, D) - Solicitar bloqueio exclusivo
     def requestExclusiveLock(self, tr_id, it_data):
@@ -116,17 +134,29 @@ class Lock_Manager:
             elif modo_block == 'X':
                 # D.bloqueio = 'X'
 
+                isTrWaiting = self.tr_manager.transactions[tr_id].state == 'wait'
+
+                # Atualizar estado da transcao ('wait')
+                self.tr_manager.transactions[tr_id].state = 'wait'
+
                 # Adicionar na lista da fila para o dado D
                 try:
                     self.Wait_Q[it_data].append((tr_id, 'X'))
                 except:
                     self.Wait_Q[it_data] = [(tr_id, 'X')]
 
+                if not isTrWaiting:
+                    # Transação acabou de mudar para o estado 'wait'
+                    return 'POSTERGADA', True
+                return 'POSTERGADA', False
+
         else:
             # D.bloqueio = 'U'
             self.Lock_Table.append((it_data, 'X', tr_id))
 
         self.saveLockTable()
+
+        return 'OK', False
 
     # U(Tr, D) - Solicitar desbloqueio para tal dado e transação
     def requestUnlock(self, tr_id, it_data):
@@ -153,6 +183,17 @@ class Lock_Manager:
     def removeFromLockTable(self, index):
         element = self.Lock_Table.pop(int(index))
         return element
+
+    # REMOVER # Retorna a fila de espera para um determinado item de dado    # REMOVER 
+    def getDataWaitQ(self, it_data):
+        try:
+            wq = self.Wait_Q[it_data]
+            return wq
+        except:
+            pass
+        return None
+
+
 
 
 def getParamString(param):
@@ -193,22 +234,13 @@ def clearLockTable():
     f.write("")
     f.close()
 
-def main():
-    operations = readAndParseInput()
 
-    if not operations:
-        return
-
-    clearLockTable()
-
-    print(operations)
-
-    # WAIT-DIE
-    tr_manager = Tr_Manager()
-    lock_manager = Lock_Manager()
+# Sem técnica de prevenção
+def semTecnicaPrevencao(tr_manager, lock_manager, operations):
     history = []
+    response = 'OK'
 
-    for op in operations:
+    for n_op, op in enumerate(operations):
         op_type = op[0]
         tr_id = op[1]
         it_data = op[2] if len(op) > 2 else None
@@ -220,30 +252,181 @@ def main():
 
         elif op_type == 'r':
             # Operação de leitura
-            res = lock_manager.requestSharedLock(tr_id, it_data)
+
+            trState = lock_manager.tr_manager.transactions[tr_id].state
+            if trState == 'active':
+                response, nowWaiting = lock_manager.requestSharedLock(tr_id, it_data)
+                
+                if response == 'OK':
+                    history.append(op)
+                elif response == 'POSTERGADA':
+                    lock_manager.tr_manager.transactions[tr_id].postergadas.append(op)
+
+            elif trState == 'wait':
+                # Caso o estado da transação esteja em espera, postergar
+                lock_manager.tr_manager.transactions[tr_id].postergadas.append(op)
 
         elif op_type == 'w':
             # Operação de escrita
-            res = lock_manager.requestExclusiveLock(tr_id, it_data)
+
+            trState = lock_manager.tr_manager.transactions[tr_id].state
+            if trState == 'active':
+                response, nowWaiting = lock_manager.requestExclusiveLock(tr_id, it_data)
+
+                if response == 'OK':
+                    history.append(op)
+                elif response == 'POSTERGADA':
+                    lock_manager.tr_manager.transactions[tr_id].postergadas.append(op)
+
+            elif trState == 'wait':
+                # Caso o estado da transação esteja em espera, postergar
+                lock_manager.tr_manager.transactions[tr_id].postergadas.append(op)
 
         elif op_type == 'C':
-            index = 0
+
+            trState = lock_manager.tr_manager.transactions[tr_id].state
+            if trState == 'active':
+                # Caso o estado da transação esteja ativa (sem bloqueio), executar normalmente
+                lock_manager.getLockTable()
+
+                for index, block in enumerate(lock_manager.Lock_Table):
+                    if block[2] == tr_id:
+                        if len(lock_manager.Lock_Table) > 0:
+                            unlocked_block = lock_manager.removeFromLockTable(index)
+                            unlocked_item = unlocked_block[0]
+                            lock_manager.unqueue(unlocked_item)
+                            lock_manager.requestUnlock(tr_id, block[0])
+
+                lock_manager.saveLockTable()
+
+            elif trState == 'wait':
+                # Caso o estado da transação esteja em espera, postergar
+                response = 'POSTERGADA'
+                lock_manager.tr_manager.transactions[tr_id].postergadas.append(op)
+            
+
+        if DEBUG:
             lock_manager.getLockTable()
+            print(n_op+1, ": ", op, response, "      Lock Table: ", lock_manager.Lock_Table, "      Wait_Q: ", lock_manager.Wait_Q)
+        else:
+            print(n_op+1, ": ", op, response)
 
-            for block in lock_manager.Lock_Table:
-                if block[2] == tr_id:
-                    if len(lock_manager.Lock_Table) > 0:
-                        unlocked_block = lock_manager.removeFromLockTable(index)
-                        unlocked_item = unlocked_block[0]
-                        lock_manager.unqueue(unlocked_item)
-                        lock_manager.requestUnlock(tr_id, block[0])
-                        lock_manager.saveLockTable()
-                index += 1
+    return history
 
-    print("Historia: ", history)
-    lock_manager.getLockTable()
-    print("Lock Table: ", lock_manager.Lock_Table)
-    print("Wait_Queue", lock_manager.Wait_Q)
+# Técnica de prevenção Wait-Die
+def waitDie(tr_manager, lock_manager, operations):
+    history = []
+    response = 'OK'
+
+    for n_op, op in enumerate(operations):
+        op_type = op[0]
+        tr_id = op[1]
+        it_data = op[2] if len(op) > 2 else None
+        
+        if op_type == 'BT':
+            # Começa uma nova transação
+            tr_manager.newTransaction(tr_id)
+            history.append(op)
+
+        elif op_type == 'r':
+            # Operação de leitura
+
+            trState = lock_manager.tr_manager.transactions[tr_id].state
+            if trState == 'active':
+                response, nowWaiting = lock_manager.requestSharedLock(tr_id, it_data)
+
+                if nowWaiting:
+                    # Caso transação tenha ido para o estado 'wait'
+                    print("Transação ", tr_id, "ROLLBACKED")
+                
+                if response == 'OK':
+                    history.append(op)
+                elif response == 'POSTERGADA':
+                    lock_manager.tr_manager.transactions[tr_id].postergadas.append(op)
+
+            elif trState == 'wait':
+                # Caso o estado da transação esteja em espera, postergar
+                lock_manager.tr_manager.transactions[tr_id].postergadas.append(op)
+
+        elif op_type == 'w':
+            # Operação de escrita
+
+            trState = lock_manager.tr_manager.transactions[tr_id].state
+            if trState == 'active':
+                response, nowWaiting = lock_manager.requestExclusiveLock(tr_id, it_data)
+
+                if nowWaiting:
+                    # Caso transação tenha ido para o estado 'wait'
+                    print("Transação ", tr_id, "ROLLBACKED")
+
+                if response == 'OK':
+                    history.append(op)
+                elif response == 'POSTERGADA':
+                    lock_manager.tr_manager.transactions[tr_id].postergadas.append(op)
+
+            elif trState == 'wait':
+                # Caso o estado da transação esteja em espera, postergar
+                lock_manager.tr_manager.transactions[tr_id].postergadas.append(op)
+
+        elif op_type == 'C':
+
+            trState = lock_manager.tr_manager.transactions[tr_id].state
+            if trState == 'active':
+                # Caso o estado da transação esteja ativa (sem bloqueio), executar normalmente
+                lock_manager.getLockTable()
+
+                for index, block in enumerate(lock_manager.Lock_Table):
+                    if block[2] == tr_id:
+                        if len(lock_manager.Lock_Table) > 0:
+                            unlocked_block = lock_manager.removeFromLockTable(index)
+                            unlocked_item = unlocked_block[0]
+                            lock_manager.unqueue(unlocked_item)
+                            lock_manager.requestUnlock(tr_id, block[0])
+
+                lock_manager.saveLockTable()
+
+            elif trState == 'wait':
+                # Caso o estado da transação esteja em espera, postergar
+                response = 'POSTERGADA'
+                lock_manager.tr_manager.transactions[tr_id].postergadas.append(op)
+            
+
+        if DEBUG:
+            lock_manager.getLockTable()
+            print(n_op+1, ": ", op, response, "      Lock Table: ", lock_manager.Lock_Table, "      Wait_Q: ", lock_manager.Wait_Q)
+        else:
+            print(n_op+1, ": ", op, response)
+
+    return history
+
+
+def main():
+    operations = readAndParseInput()
+
+    if not operations:
+        return
+
+    clearLockTable()
+
+    print(operations)
+    print()
+
+    # SEM TÉCNICA DE PREVENÇÃO
+    tr_manager = Tr_Manager()
+    lock_manager = Lock_Manager(tr_manager)
+    print("Sem técnica de prevenção")
+    history = semTecnicaPrevencao(tr_manager, lock_manager, operations.copy())
+    print("\nHistoria: ", history)
+    print("\n\n")
+
+    # WAIT-DIE
+    tr_manager = Tr_Manager()
+    lock_manager = Lock_Manager(tr_manager)
+    print("Técnica WAIT-DIE")
+    history = waitDie(tr_manager, lock_manager, operations.copy())
+    print("\nHistoria: ", history)
+
+    
 
 
 main()
