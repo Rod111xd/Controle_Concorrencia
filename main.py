@@ -604,12 +604,11 @@ def main():
     if not operations:
         return
 
-    clearLockTable()
-
     print(operations)
     print()
 
     # WAIT-DIE
+    clearLockTable()
     tr_manager = Tr_Manager()
     lock_manager = Lock_Manager(tr_manager)
     print("Técnica WAIT-DIE")
@@ -619,6 +618,7 @@ def main():
     print(tr_manager.transactions['2'].waiting)
 
     # WOUND-WAIT
+    clearLockTable()
     tr_manager = Tr_Manager()
     lock_manager = Lock_Manager(tr_manager)
     print("Técnica WOUND-WAIT")
