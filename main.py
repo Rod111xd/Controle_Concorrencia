@@ -14,12 +14,13 @@ class Transaction:
         self.waiting = []
 
 class Tr_Manager:
-    Tr = 0
-    transactions = {}
-    conflicts = [] # (tr_id_1, tr_id_2); arestas de conflito
-    curWaiting = []
-    rollbacked = []
-    history = []
+    def __init__(self):
+        self.Tr = 0
+        self.transactions = {}
+        self.conflicts = [] # (tr_id_1, tr_id_2); arestas de conflito
+        self.curWaiting = []
+        self.rollbacked = []
+        self.history = []
 
     def newTransaction(self, id):
         self.Tr += 1
@@ -28,12 +29,12 @@ class Tr_Manager:
 
     
 class Lock_Manager:
-    # LT: [(item bloqueado, id transação, modo de bloqueio), ...]
-    Lock_Table = []
-    # WQ: 'item_dado': [(id transacao, modo de bloqueio), ...]
-    Wait_Q = {}
 
     def __init__(self, tr_manager):
+        # LT: [(item bloqueado, modo de bloqueio, id transação), ...]
+        self.Lock_Table = []
+        # WQ: 'item_dado': [(id transacao, modo de bloqueio), ...]
+        self.Wait_Q = {}
         self.tr_manager = tr_manager
 
     # Coloca o Lock_Table na memória
@@ -176,7 +177,7 @@ class Lock_Manager:
             self.tr_manager.transactions[tr_id_lock].waiting = [x for x in self.tr_manager.history if x[1] == tr_id_lock]
             self.tr_manager.history = [x for x in self.tr_manager.history if x[1] != tr_id_lock]
 
-            return 'ROLLBACK', "T" + tr_id_lock + " ROLLBACKED" + "\n"
+            return 'ROLLBACK2', "T" + tr_id_lock + " ROLLBACKED" + "\n"
 
         else:
             # tr_id é mais nova que tr_id_lock
@@ -393,10 +394,68 @@ def clearLockTable():
     f.write("")
     f.close()
 
+# Executar transações em espera
+def executeWaiting(lock_manager):
+    toRemove = []
+    extraOutput = ""
+    for tr in lock_manager.tr_manager.curWaiting:
+        # Se a transação ainda estiver em conflito, não executar
+        for conf in lock_manager.tr_manager.conflicts:
+            if conf[1] == tr:
+                continue
+        
+        # Transação agora volta a estar ativa sem espera
+        lock_manager.tr_manager.transactions[tr].state = 'active'
+
+        wasRollbacked = False
+        if tr in lock_manager.tr_manager.rollbacked:
+            wasRollbacked = True
+            for conf in lock_manager.tr_manager.conflicts:
+                if conf[1] == tr:
+                    # Transação rollbacked ainda precisa esperar liberação de bloqueio de outra transação
+                    continue
+
+        extraOutput += "A ser reexecutado de T" if wasRollbacked else "Executado de T"
+        extraOutput += tr + ": " + formatHistory([x for x in lock_manager.tr_manager.transactions[tr].waiting if x[0] != 'BT'])
+        extraOutput += "\n" if not wasRollbacked else ""
+
+        # transação não está mais em espera
+        lock_manager.tr_manager.transactions[tr].state = 'active'
+        if ('C', tr) in lock_manager.tr_manager.transactions[tr].waiting:
+            # Remover bloqueios para transação commitada com sucesso
+            lock_manager.getLockTable()
+            lock_manager.Lock_Table = [x for x in lock_manager.Lock_Table if x[2] != tr]
+            lock_manager.saveLockTable()
+
+            # Reativar transações que estavam em conflito por causa de tr_id
+            trsToActive = [x[1] for x in lock_manager.tr_manager.conflicts if x[0] == tr]
+            for trActive in trsToActive:
+                lock_manager.tr_manager.transactions[trActive].state = 'active'
+
+            # Remover conflitos de origem em tr
+            lock_manager.tr_manager.conflicts = [x for x in lock_manager.tr_manager.conflicts if x[0] != tr]
+
+            # Alternar tr_id para estado finalizado
+            lock_manager.tr_manager.transactions[tr].state = 'DONE'
+
+        toRemove.append(tr)
+
+        # Limpar lista de operações em espera da transação tr
+        lock_manager.tr_manager.transactions[tr].waiting = []
+
+    # Tirar transação da fila de espera
+    lock_manager.tr_manager.curWaiting = [x for x in lock_manager.tr_manager.curWaiting if x not in toRemove]
+    # Também tirar transação da fila de rollbackeds, se for o caso
+    if wasRollbacked:
+        lock_manager.tr_manager.rollbacked = [x for x in lock_manager.tr_manager.rollbacked if x not in toRemove]
+
+    return extraOutput
+
 # Técnica de prevenção Wait-Die
-def executar(tr_manager, lock_manager, operations, method):
+def execute(tr_manager, lock_manager, operations, method):
     
     for n_op, op in enumerate(operations):
+
         response = 'OK'
         graph = ""
         extraOutput = ""
@@ -421,56 +480,10 @@ def executar(tr_manager, lock_manager, operations, method):
                 elif response == 'POSTERGADA':
                     graph = lock_manager.formatGraph(extra)
                     lock_manager.tr_manager.transactions[tr_id].waiting.append(op)
-                elif response == 'ROLLBACK':
+                elif response == 'ROLLBACK' or response == 'ROLLBACK2':
                     # Tentar executar transações em espera
-                    toRemove = []
-                    extraOutput = extra
-                    for tr in lock_manager.tr_manager.curWaiting:
-                        # Se a transação ainda estiver em conflito, não executar
-                        for conf in lock_manager.tr_manager.conflicts:
-                            if conf[1] == tr:
-                                continue
-                        
-                        # Transação agora volta a estar ativa sem espera
-                        lock_manager.tr_manager.transactions[tr].state = 'active'
-
-                        wasRollbacked = False
-                        if tr in lock_manager.tr_manager.rollbacked:
-                            wasRollbacked = True
-                            for conf in lock_manager.tr_manager.conflicts:
-                                if conf[1] == tr:
-                                    # Transação rollbacked ainda precisa esperar liberação de bloqueio de outra transação
-                                    continue
-
-                        extraOutput += "Reexecutado de T" if wasRollbacked else "Executado de T"
-                        extraOutput += tr + ": " + formatHistory(lock_manager.tr_manager.transactions[tr].waiting)
-                        extraOutput += "\n" if not wasRollbacked else ""
-
-                        # transação não está mais em espera
-                        lock_manager.tr_manager.transactions[tr].state = 'active'
-                        if ('C', tr) in lock_manager.tr_manager.transactions[tr].waiting:
-                            # Remover bloqueios para transação commitada com sucesso
-                            lock_manager.getLockTable()
-                            lock_manager.Lock_Table = [x for x in lock_manager.Lock_Table if x[1] != tr]
-                            lock_manager.saveLockTable()
-
-                            # Remover conflitos de origem em tr
-                            lock_manager.tr_manager.conflicts = [x for x in lock_manager.tr_manager.conflicts if x[0] != tr]
-
-                            # Alternar tr_id para estado finalizado
-                            lock_manager.tr_manager.transactions[tr].state = 'DONE'
-
-                        toRemove.append(tr)
-
-                        # Limpar lista de operações em espera da transação tr
-                        lock_manager.tr_manager.transactions[tr].waiting = []
-
-                    # Tirar transação da fila de espera
-                    lock_manager.tr_manager.curWaiting = [x for x in lock_manager.tr_manager.curWaiting if x not in toRemove]
-                    # Também tirar transação da fila de rollbackeds, se for o caso
-                    if wasRollbacked:
-                        lock_manager.tr_manager.rollbacked = [x for x in lock_manager.tr_manager.rollbacked if x not in toRemove]
-
+                    response = 'OK' if response == 'ROLLBACK2' else response
+                    extraOutput = extra + executeWaiting(lock_manager)
 
             elif trState == 'wait':
                 # Caso o estado da transação esteja em espera, postergar
@@ -480,6 +493,7 @@ def executar(tr_manager, lock_manager, operations, method):
             # Operação de escrita
 
             trState = lock_manager.tr_manager.transactions[tr_id].state
+            
             if trState == 'active':
                 response, extra = lock_manager.requestExclusiveLock(op, method, n_op=n_op)
 
@@ -488,55 +502,10 @@ def executar(tr_manager, lock_manager, operations, method):
                 elif response == 'POSTERGADA':
                     graph = lock_manager.formatGraph(extra)
                     lock_manager.tr_manager.transactions[tr_id].waiting.append(op)
-                elif response == 'ROLLBACK':
+                elif response == 'ROLLBACK' or response == 'ROLLBACK2':
                     # Tentar executar transações em espera
-                    toRemove = []
-                    extraOutput = extra
-                    for tr in lock_manager.tr_manager.curWaiting:
-                        # Se a transação ainda estiver em conflito, não executar
-                        for conf in lock_manager.tr_manager.conflicts:
-                            if conf[1] == tr:
-                                continue
-                        
-                        # Transação agora volta a estar ativa sem espera
-                        lock_manager.tr_manager.transactions[tr].state = 'active'
-
-                        wasRollbacked = False
-                        if tr in lock_manager.tr_manager.rollbacked:
-                            wasRollbacked = True
-                            for conf in lock_manager.tr_manager.conflicts:
-                                if conf[1] == tr:
-                                    # Transação rollbacked ainda precisa esperar liberação de bloqueio de outra transação
-                                    continue
-
-                        extraOutput += "Reexecutado de T" if wasRollbacked else "Executado de T"
-                        extraOutput += tr + ": " + formatHistory(lock_manager.tr_manager.transactions[tr].waiting)
-                        extraOutput += "\n" if not wasRollbacked else ""
-
-                        # transação não está mais em espera
-                        lock_manager.tr_manager.transactions[tr].state = 'active'
-                        if ('C', tr) in lock_manager.tr_manager.transactions[tr].waiting:
-                            # Remover bloqueios para transação commitada com sucesso
-                            lock_manager.getLockTable()
-                            lock_manager.Lock_Table = [x for x in lock_manager.Lock_Table if x[1] != tr]
-                            lock_manager.saveLockTable()
-
-                            # Remover conflitos de origem em tr
-                            lock_manager.tr_manager.conflicts = [x for x in lock_manager.tr_manager.conflicts if x[0] != tr]
-
-                            # Alternar tr_id para estado finalizado
-                            lock_manager.tr_manager.transactions[tr].state = 'DONE'
-
-                        toRemove.append(tr)
-
-                        # Limpar lista de operações em espera da transação tr
-                        lock_manager.tr_manager.transactions[tr].waiting = []
-
-                    # Tirar transação da fila de espera
-                    lock_manager.tr_manager.curWaiting = [x for x in lock_manager.tr_manager.curWaiting if x not in toRemove]
-                    # Também tirar transação da fila de rollbackeds, se for o caso
-                    if wasRollbacked:
-                        lock_manager.tr_manager.rollbacked = [x for x in lock_manager.tr_manager.rollbacked if x not in toRemove]
+                    response = 'OK' if response == 'ROLLBACK2' else response
+                    extraOutput = extra + executeWaiting(lock_manager)
 
             elif trState == 'wait':
                 # Caso o estado da transação esteja em espera, postergar
@@ -546,24 +515,15 @@ def executar(tr_manager, lock_manager, operations, method):
 
             trState = lock_manager.tr_manager.transactions[tr_id].state
             if trState == 'active':
-
                 # Caso o estado da transação esteja ativa (sem bloqueio), executar normalmente
                 lock_manager.getLockTable()
-
-                lock_manager.Lock_Table = [x for x in lock_manager.Lock_Table if x[1] != tr_id]
-
-                #TODO: Remover?
-                """
-                for index, block in enumerate(lock_manager.Lock_Table):
-                    if block[2] == tr_id:
-                        if len(lock_manager.Lock_Table) > 0:
-                            unlocked_block = lock_manager.removeFromLockTable(index)
-                            unlocked_item = unlocked_block[0]
-                            lock_manager.unqueue(unlocked_item)
-                            lock_manager.requestUnlock(tr_id, block[0])
-                """
-
+                lock_manager.Lock_Table = [x for x in lock_manager.Lock_Table if x[2] != tr_id]
                 lock_manager.saveLockTable()
+
+                # Reativar transações que estavam em conflito por causa de tr_id
+                trsToActive = [x[1] for x in lock_manager.tr_manager.conflicts if x[0] == tr_id]
+                for trActive in trsToActive:
+                    tr_manager.transactions[trActive].state = 'active'
 
                 # Remover conflitos de origem em tr_id
                 lock_manager.tr_manager.conflicts = [x for x in lock_manager.tr_manager.conflicts if x[0] != tr_id]
@@ -576,7 +536,6 @@ def executar(tr_manager, lock_manager, operations, method):
                 response = 'POSTERGADA'
                 lock_manager.tr_manager.transactions[tr_id].waiting.append(op)
             
-
         if DEBUG:
             lock_manager.getLockTable()
             print(n_op+1, ": ", formatHistory([op]), response, graph, "      Lock Table: ", lock_manager.Lock_Table, "      Wait_Q: ", lock_manager.Wait_Q)
@@ -605,27 +564,21 @@ def main():
         return
 
     print(operations)
-    print()
 
     # WAIT-DIE
     clearLockTable()
     tr_manager = Tr_Manager()
     lock_manager = Lock_Manager(tr_manager)
-    print("Técnica WAIT-DIE")
-    executar(tr_manager, lock_manager, operations.copy(), 'wait-die')
-    print("\nHistória: ", formatHistory(tr_manager.history))
-    print("conflitos: ", tr_manager.conflicts)
-    print(tr_manager.transactions['2'].waiting)
+    print("\nTécnica WAIT-DIE")
+    execute(tr_manager, lock_manager, operations.copy(), 'wait-die')
 
     # WOUND-WAIT
     clearLockTable()
     tr_manager = Tr_Manager()
     lock_manager = Lock_Manager(tr_manager)
-    print("Técnica WOUND-WAIT")
-    executar(tr_manager, lock_manager, operations.copy(), 'wound-wait')
-    print("\nHistória: ", formatHistory(tr_manager.history))
-    print("conflitos: ", tr_manager.conflicts)
-    print(tr_manager.transactions['2'].waiting)
+    print("\nTécnica WOUND-WAIT")
+    execute(tr_manager, lock_manager, operations.copy(), 'wound-wait')
+
 
 
 main()
