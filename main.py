@@ -1,3 +1,4 @@
+from multiprocessing.connection import wait
 import traceback
 from turtle import update
 
@@ -10,12 +11,15 @@ class Transaction:
         self.Id = id
         self.Ts = ts
         self.state = 'active'
-        self.postergadas = []
+        self.waiting = []
 
 class Tr_Manager:
     Tr = 0
     transactions = {}
     conflicts = [] # (tr_id_1, tr_id_2); arestas de conflito
+    curWaiting = []
+    rollbacked = []
+    history = []
 
     def newTransaction(self, id):
         self.Tr += 1
@@ -98,8 +102,117 @@ class Lock_Manager:
             out += "    " + c[0] + "--->" + c[1]
         return out
 
+    # Lógica da técnica de wait-die
+    def waitDie(self, tr_id, tr_id_lock, it_data, op, conflict):
+        # tr_id deseja um dado bloqueado por tr_id_lock
+
+        if self.tr_manager.transactions[tr_id].Ts < self.tr_manager.transactions[tr_id_lock].Ts:
+            # tr_id é mais velha que tr_id_lock
+            # tr_id (mais velha) espera
+
+            isTrWaiting = self.tr_manager.transactions[tr_id].state == 'wait'
+
+            # Atualizar estado da transcao ('wait')
+            self.tr_manager.transactions[tr_id].state = 'wait'
+
+            # Adicionar na lista da fila para o dado D
+            try:
+                self.Wait_Q[it_data].append((tr_id, 'S'))
+            except:
+                self.Wait_Q[it_data] = [(tr_id, 'S')]
+
+            # Adiciona operação na lista de espera da transação
+            self.tr_manager.transactions[tr_id].waiting.append(op)
+
+            # Adicionar na fila de espera de transações
+            if tr_id not in self.tr_manager.curWaiting:
+                self.tr_manager.curWaiting.append(tr_id)
+
+            if not isTrWaiting:
+                # Transação acabou de mudar para o estado 'wait'
+                return 'POSTERGADA', conflict
+            return 'POSTERGADA', None
+        else:
+            # tr_id é mais nova que tr_id_lock
+            # tr_id (mais nova) sofre Rollback
+
+            print("T" + tr_id + " ROLLBACKED")
+
+            # Libera todos os bloqueios de tr_id
+            self.Lock_Table = [x for x in self.Lock_Table if x[1] != tr_id ]
+
+            # Guarda a informação de que tr_id teve Rollback
+            self.tr_manager.curWaiting.append(tr_id)
+            self.tr_manager.rollbacked.append(tr_id)
+            self.tr_manager.transactions[tr_id].state = 'wait'
+
+            # Remover conflitos com a transação que teve rollback
+            self.tr_manager.conflicts = [x for x in self.tr_manager.conflicts if x[0] != tr_id]
+
+            # Remove operações bem sucedidas da história e adiciona na lista de espera da transação tr_id
+            self.tr_manager.transactions[tr_id].waiting = [x for x in self.tr_manager.history if x[1] == tr_id]
+            self.tr_manager.history = [x for x in self.tr_manager.history if x[1] != tr_id]
+
+            return 'ROLLBACK', None
+        
+    # Lógica da técnica de wound-wait
+    def woundWait(self, tr_id, tr_id_lock, it_data, op, conflict):
+        # tr_id deseja um dado bloqueado por tr_id_lock
+
+        if self.tr_manager.transactions[tr_id].Ts < self.tr_manager.transactions[tr_id_lock].Ts:
+            # tr_id é mais velha que tr_id_lock
+            # tr_id_lock (mais nova) sofre Rollback
+            print("T" + tr_id_lock + " ROLLBACKED")
+
+            # Libera todos os bloqueios de tr_id_lock
+            self.Lock_Table = [x for x in self.Lock_Table if x[1] != tr_id_lock ]
+
+            # Guarda a informação de que tr_id_lock teve Rollback
+            self.tr_manager.curWaiting.append(tr_id_lock)
+            self.tr_manager.rollbacked.append(tr_id_lock)
+            self.tr_manager.transactions[tr_id_lock].state = 'wait'
+
+            # Remover conflitos com a transação que teve rollback
+            self.tr_manager.conflicts = [x for x in self.tr_manager.conflicts if x[0] != tr_id_lock]
+
+            # Remove operações bem sucedidas da história e adiciona na lista de espera da transação tr_id_lock
+            self.tr_manager.transactions[tr_id_lock].waiting = [x for x in self.tr_manager.history if x[1] == tr_id_lock]
+            self.tr_manager.history = [x for x in self.tr_manager.history if x[1] != tr_id_lock]
+
+            return 'ROLLBACK', None
+
+        else:
+            # tr_id é mais nova que tr_id_lock
+            # tr_id (mais nova) espera
+
+            isTrWaiting = self.tr_manager.transactions[tr_id].state == 'wait'
+
+            # Atualizar estado da transcao ('wait')
+            self.tr_manager.transactions[tr_id].state = 'wait'
+
+            # Adicionar na lista da fila para o dado D
+            try:
+                self.Wait_Q[it_data].append((tr_id, 'S'))
+            except:
+                self.Wait_Q[it_data] = [(tr_id, 'S')]
+
+            self.tr_manager.transactions[tr_id].waiting.append(op)
+
+            # Adicionar na fila de espera de transações
+            if tr_id not in self.tr_manager.curWaiting:
+                self.tr_manager.curWaiting.append(tr_id)
+
+            if not isTrWaiting:
+                # Transação acabou de mudar para o estado 'wait'
+                return 'POSTERGADA', conflict
+            return 'POSTERGADA', None
+
+
     # LS(tr, D) - Solicitar bloqueio compartilhado
-    def requestSharedLock(self, tr_id, it_data):
+    def requestSharedLock(self, op, method, n_op=0):
+        tr_id = op[1]
+        it_data = op[2] 
+        
         # lock = (modo bloqueio, tr_id) ou None(sem bloqueio)
         lock = self.checkLock(it_data)
 
@@ -121,23 +234,16 @@ class Lock_Manager:
                     # Adicionar conflito à lista de conflitos
                     if self.newConflict(conflict):
                         # A requisição causará um ciclo de conflitos (deadlock)
-                        return 'DEADLOCK', conflict
+                        graph = self.formatGraph(conflict)
+                        print("DEADLOCK iminente na operação " + str(n_op+1), "    " + graph)
+                        
 
-                isTrWaiting = self.tr_manager.transactions[tr_id].state == 'wait'
+                if method == 'wait-die':
+                    return self.waitDie(tr_id, tr_id_lock, it_data, op, conflict)
 
-                # Atualizar estado da transcao ('wait')
-                self.tr_manager.transactions[tr_id].state = 'wait'
+                elif method == 'wound-wait':
+                    return self.woundWait(tr_id, tr_id_lock, it_data, op, conflict)
 
-                # Adicionar na lista da fila para o dado D
-                try:
-                    self.Wait_Q[it_data].append((tr_id, 'S'))
-                except:
-                    self.Wait_Q[it_data] = [(tr_id, 'S')]
-
-                if not isTrWaiting:
-                    # Transação acabou de mudar para o estado 'wait'
-                    return 'POSTERGADA', conflict
-                return 'POSTERGADA', None
         else:
             # D.bloqueio = 'U'
             self.Lock_Table.append((it_data, 'S', tr_id))
@@ -147,7 +253,10 @@ class Lock_Manager:
         return 'OK', None
    
     # LX(tr, D) - Solicitar bloqueio exclusivo
-    def requestExclusiveLock(self, tr_id, it_data):
+    def requestExclusiveLock(self, op, method, n_op=0):
+        tr_id = op[1]
+        it_data = op[2] 
+
         # lock = (modo bloqueio, tr_id) ou None(sem bloqueio)
         lock = self.checkLock(it_data)
 
@@ -163,12 +272,21 @@ class Lock_Manager:
                 if tr_id_lock != tr_id:
                     conflict = (tr_id_lock, tr_id)
 
-                    if self.newConflict((tr_id_lock, tr_id)):
+                    if self.newConflict(conflict):
                         # A requisição causará um ciclo de conflitos (deadlock)
-                        return 'DEADLOCK', conflict
+                        graph = self.formatGraph(conflict)
+                        print("DEADLOCK iminente na operação " + str(n_op+1), "    " + graph)
 
-                self.Lock_Table = [x for x in self.Lock_Table if x[0] != it_data ]
-                self.Lock_Table.append((it_data, 'X', tr_id))
+                    if method == 'wait-die':
+                        return self.waitDie(tr_id, tr_id_lock, it_data, op, conflict)
+
+                    elif method == 'wound-wait':
+                        return self.woundWait(tr_id, tr_id_lock, it_data, op, conflict)
+                        
+                else:
+                    self.Lock_Table = [x for x in self.Lock_Table if x[0] != it_data ]
+                    self.Lock_Table.append((it_data, 'X', tr_id))
+
             elif modo_block == 'X':
                 # D.bloqueio = 'X'
 
@@ -176,25 +294,17 @@ class Lock_Manager:
                 if tr_id_lock != tr_id:
                     conflict = (tr_id_lock, tr_id)
 
-                    if self.newConflict((tr_id_lock, tr_id)):
+                    if self.newConflict(conflict):
                         # A requisição causará um ciclo de conflitos (deadlock)
-                        return 'DEADLOCK', conflict
+                        graph = self.formatGraph(conflict)
+                        print("DEADLOCK iminente na operação " + str(n_op+1), "    " + graph)
+                        
 
-                isTrWaiting = self.tr_manager.transactions[tr_id].state == 'wait'
+                if method == 'wait-die':
+                    return self.waitDie(tr_id, tr_id_lock, it_data, op, conflict)
 
-                # Atualizar estado da transcao ('wait')
-                self.tr_manager.transactions[tr_id].state = 'wait'
-
-                # Adicionar na lista da fila para o dado D
-                try:
-                    self.Wait_Q[it_data].append((tr_id, 'X'))
-                except:
-                    self.Wait_Q[it_data] = [(tr_id, 'X')]
-
-                if not isTrWaiting:
-                    # Transação acabou de mudar para o estado 'wait'
-                    return 'POSTERGADA', conflict
-                return 'POSTERGADA', None
+                elif method == 'wound-wait':
+                    return self.woundWait(tr_id, tr_id_lock, it_data, op, conflict)
 
         else:
             # D.bloqueio = 'U'
@@ -204,7 +314,7 @@ class Lock_Manager:
 
         return 'OK', None
 
-    # U(Tr, D) - Solicitar desbloqueio para tal dado e transação
+    # U(Tr, D) - Solicitar desbloqueio para tal dado e transação TODO: FAZER ALGO COM O METODO
     def requestUnlock(self, tr_id, it_data):
         # lock = (modo bloqueio, tr_id) ou None(sem bloqueio)
         lock = self.checkLock(it_data)
@@ -230,21 +340,13 @@ class Lock_Manager:
         element = self.Lock_Table.pop(int(index))
         return element
 
-    # REMOVER # Retorna a fila de espera para um determinado item de dado    # REMOVER 
-    def getDataWaitQ(self, it_data):
-        try:
-            wq = self.Wait_Q[it_data]
-            return wq
-        except:
-            pass
-        return None
 
 
-
-
+# Remover parênteses
 def getParamString(param):
     return param.replace("(","").replace(")","")
 
+# Ler entrada e retornar operações
 def readAndParseInput():
     f = open(INPUT_FILE, "r")
     lines = f.read().split("\n")
@@ -275,19 +377,18 @@ def readAndParseInput():
 
     return ops
 
+# Limpar Lock_Table do disco
 def clearLockTable():
     f = open(LOCK_TABLE_FILE, "w")
     f.write("")
     f.close()
 
 # Técnica de prevenção Wait-Die
-def waitDie(tr_manager, lock_manager, operations, initialOpNumber=0):
-    history = []
+def executar(tr_manager, lock_manager, operations, method):
+    
     response = 'OK'
     
-    n_op = initialOpNumber
-    
-    for op in operations:
+    for n_op, op in enumerate(operations):
         graph = ""
         op_type = op[0]
         tr_id = op[1]
@@ -296,51 +397,82 @@ def waitDie(tr_manager, lock_manager, operations, initialOpNumber=0):
         if op_type == 'BT':
             # Começa uma nova transação
             tr_manager.newTransaction(tr_id)
-            history.append(op)
+            tr_manager.history.append(op)
 
         elif op_type == 'r':
             # Operação de leitura
 
             trState = lock_manager.tr_manager.transactions[tr_id].state
             if trState == 'active':
-                response, conflict = lock_manager.requestSharedLock(tr_id, it_data)
+                response, conflict = lock_manager.requestSharedLock(op, method, n_op=n_op)
                 
                 if response == 'OK':
-                    history.append(op)
+                    tr_manager.history.append(op)
                 elif response == 'POSTERGADA':
                     graph = lock_manager.formatGraph(conflict)
-                    lock_manager.tr_manager.transactions[tr_id].postergadas.append(op)
-                elif response == 'DEADLOCK':
-                    graph = lock_manager.formatGraph(conflict)
-                    # LÓGICA DO WAITDIE
-                    print("DEADLOCK iminente na operação " + str(n_op+1), "    " + graph)
-                    #return history
+                    lock_manager.tr_manager.transactions[tr_id].waiting.append(op)
+                elif response == 'ROLLBACK':
+                    # Tentar executar transações em espera
+                    toRemove = []
+                    for tr in lock_manager.tr_manager.curWaiting:
+                        #if tr not in lock_manager.tr_manager.rollbacked:
+                        print("Executado ", formatHistory(lock_manager.tr_manager.transactions[tr].waiting))
+                        # transação não está mais em espera
+                        lock_manager.tr_manager.transactions[tr].state = 'active'
+                        if ('C', tr) in lock_manager.tr_manager.transactions[tr].waiting:
+                            # Remover bloqueios para transação commitada com sucesso
+                            lock_manager.getLockTable()
+
+                            lock_manager.Lock_Table = [x for x in lock_manager.Lock_Table if x[1] != tr]
+
+                            lock_manager.saveLockTable()
+
+                            break #TODO?
+                        toRemove.append(tr)
+                    # Tirar transação da fila de espera
+                    lock_manager.tr_manager.curWaiting = [x for x in lock_manager.tr_manager.curWaiting if x not in toRemove]
+
 
             elif trState == 'wait':
                 # Caso o estado da transação esteja em espera, postergar
-                lock_manager.tr_manager.transactions[tr_id].postergadas.append(op)
+                lock_manager.tr_manager.transactions[tr_id].waiting.append(op)
 
         elif op_type == 'w':
             # Operação de escrita
 
             trState = lock_manager.tr_manager.transactions[tr_id].state
             if trState == 'active':
-                response, conflict = lock_manager.requestExclusiveLock(tr_id, it_data)
+                response, conflict = lock_manager.requestExclusiveLock(op, method, n_op=n_op)
 
                 if response == 'OK':
-                    history.append(op)
+                    tr_manager.history.append(op)
                 elif response == 'POSTERGADA':
                     graph = lock_manager.formatGraph(conflict)
-                    lock_manager.tr_manager.transactions[tr_id].postergadas.append(op)
-                elif response == 'DEADLOCK':
-                    graph = lock_manager.formatGraph(conflict)
-                    # LÓGICA DO WAITDIE
-                    print("DEADLOCK iminente na operação " + str(n_op+1), "    " + graph)
-                    #return history
+                    lock_manager.tr_manager.transactions[tr_id].waiting.append(op)
+                elif response == 'ROLLBACK':
+                    # Tentar executar transações em espera
+                    toRemove = []
+                    for tr in lock_manager.tr_manager.curWaiting:
+                        #if tr not in lock_manager.tr_manager.rollbacked:
+                        print("Executado ", formatHistory(lock_manager.tr_manager.transactions[tr].waiting))
+                        # transação não está mais em espera
+                        lock_manager.tr_manager.transactions[tr].state = 'active'
+                        if ('C', tr) in lock_manager.tr_manager.transactions[tr].waiting:
+                            # Remover bloqueios para transação commitada com sucesso
+                            lock_manager.getLockTable()
+
+                            lock_manager.Lock_Table = [x for x in lock_manager.Lock_Table if x[1] != tr]
+
+                            lock_manager.saveLockTable()
+
+                            break #TODO?
+                        toRemove.append(tr)
+                    # Tirar transação da fila de espera
+                    lock_manager.tr_manager.curWaiting = [x for x in lock_manager.tr_manager.curWaiting if x not in toRemove]
 
             elif trState == 'wait':
                 # Caso o estado da transação esteja em espera, postergar
-                lock_manager.tr_manager.transactions[tr_id].postergadas.append(op)
+                lock_manager.tr_manager.transactions[tr_id].waiting.append(op)
 
         elif op_type == 'C':
 
@@ -349,6 +481,9 @@ def waitDie(tr_manager, lock_manager, operations, initialOpNumber=0):
                 # Caso o estado da transação esteja ativa (sem bloqueio), executar normalmente
                 lock_manager.getLockTable()
 
+                lock_manager.Lock_Table = [x for x in lock_manager.Lock_Table if x[1] != tr_id]
+
+                """
                 for index, block in enumerate(lock_manager.Lock_Table):
                     if block[2] == tr_id:
                         if len(lock_manager.Lock_Table) > 0:
@@ -356,24 +491,22 @@ def waitDie(tr_manager, lock_manager, operations, initialOpNumber=0):
                             unlocked_item = unlocked_block[0]
                             lock_manager.unqueue(unlocked_item)
                             lock_manager.requestUnlock(tr_id, block[0])
+                """
 
                 lock_manager.saveLockTable()
 
             elif trState == 'wait':
                 # Caso o estado da transação esteja em espera, postergar
                 response = 'POSTERGADA'
-                lock_manager.tr_manager.transactions[tr_id].postergadas.append(op)
+                lock_manager.tr_manager.transactions[tr_id].waiting.append(op)
             
 
         if DEBUG:
             lock_manager.getLockTable()
-            print(n_op+1, ": ", op, response, graph, "      Lock Table: ", lock_manager.Lock_Table, "      Wait_Q: ", lock_manager.Wait_Q)
+            print(n_op+1, ": ", formatHistory([op]), response, graph, "      Lock Table: ", lock_manager.Lock_Table, "      Wait_Q: ", lock_manager.Wait_Q)
         else:
-            print(n_op+1, ": ", op, response, graph)
+            print(n_op+1, ": ", formatHistory([op]), response, graph)
 
-        n_op += 1
-
-    return history
 
 
 def formatHistory(history):
@@ -383,6 +516,8 @@ def formatHistory(history):
             out += h[0] + h[1] + "(" + h[2] + ")" + "   "
         else:
             out += h[0] + "(" + h[1] + ")" + "   "
+            if h[0] == 'C':
+                out += " "
     return out
 
 def main():
@@ -400,10 +535,10 @@ def main():
     tr_manager = Tr_Manager()
     lock_manager = Lock_Manager(tr_manager)
     print("Técnica WAIT-DIE")
-    history = waitDie(tr_manager, lock_manager, operations.copy())
-    print("\nHistoria: ", formatHistory(history))
-
-    
+    executar(tr_manager, lock_manager, operations.copy(), 'wait-die')
+    print("\nHistoria: ", formatHistory(tr_manager.history))
+    print("conflitos: ", tr_manager.conflicts)
+    print(tr_manager.transactions['2'].waiting)
 
 
 main()
