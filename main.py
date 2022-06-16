@@ -1,8 +1,5 @@
-from multiprocessing.connection import wait
-import traceback
-from turtle import update
 
-INPUT_FILE = "deadlock.txt"
+INPUT_FILE = "daniel.txt"
 LOCK_TABLE_FILE = "lock_table.txt"
 DEBUG = False
 
@@ -77,8 +74,7 @@ class Lock_Manager:
                 # (modo_bloqueio, tr_id)
                 r = (lock[1], lock[2])
                 break
-        self.Lock_Table = []
-
+        self.saveLockTable()
         return r
 
     # Adicionar novo conflito na lista de conflitos
@@ -94,13 +90,14 @@ class Lock_Manager:
         return False
 
     # Formatar o print do grafo de conflitos
-    def formatGraph(self, n_conf):
+    def formatGraph(self, novo_conf=None):
         confs = self.tr_manager.conflicts.copy()
-        if n_conf not in confs:
-            confs.append(n_conf)
+        if novo_conf not in confs:
+            if novo_conf:
+                confs.append(novo_conf)
         out = ""
         for c in confs:
-            out += "    " + c[0] + "--->" + c[1]
+            out += "    T" + c[0] + "--->T" + c[1]
         return out
 
     # Lógica da técnica de wait-die
@@ -138,21 +135,29 @@ class Lock_Manager:
             # tr_id (mais nova) sofre Rollback
 
             # Libera todos os bloqueios de tr_id
-            self.Lock_Table = [x for x in self.Lock_Table if x[1] != tr_id ]
+            self.getLockTable()
+            self.Lock_Table = [x for x in self.Lock_Table if x[2] != tr_id ]
+            self.saveLockTable()
 
             # Guarda a informação de que tr_id teve Rollback
-            self.tr_manager.curWaiting.append(tr_id)
+            #self.tr_manager.curWaiting.append(tr_id)
             self.tr_manager.rollbacked.append(tr_id)
             self.tr_manager.transactions[tr_id].state = 'wait'
-
+            
             # Remover conflitos com a transação que teve rollback
             self.tr_manager.conflicts = [x for x in self.tr_manager.conflicts if x[1] != tr_id]
+        
+            # Sinalizar que tr_id_lock deve ser executada
+            self.tr_manager.transactions[tr_id_lock].state = 'active'
 
             # Remove operações bem sucedidas da história e adiciona na lista de espera da transação tr_id
             self.tr_manager.transactions[tr_id].waiting = [x for x in self.tr_manager.history if x[1] == tr_id]
             self.tr_manager.history = [x for x in self.tr_manager.history if x[1] != tr_id]
 
-            return 'ROLLBACK', "T" + tr_id + " ROLLBACKED" + "\n"
+            # Adiciona na lista de espera da transação tr_id a operação que causou o rollback
+            self.tr_manager.transactions[tr_id].waiting.append(op)
+
+            return 'ROLLBACK', "T" + tr_id + " ROLLBACKED"
         
     # Lógica da técnica de wound-wait
     def woundWait(self, tr_id, tr_id_lock, it_data, op, conflict):
@@ -163,21 +168,26 @@ class Lock_Manager:
             # tr_id_lock (mais nova) sofre Rollback
 
             # Libera todos os bloqueios de tr_id_lock
-            self.Lock_Table = [x for x in self.Lock_Table if x[1] != tr_id_lock ]
+            self.getLockTable()
+            self.Lock_Table = [x for x in self.Lock_Table if x[2] != tr_id_lock ]
+            self.saveLockTable()
 
             # Guarda a informação de que tr_id_lock teve Rollback
-            self.tr_manager.curWaiting.append(tr_id_lock)
+            #self.tr_manager.curWaiting.append(tr_id_lock)
             self.tr_manager.rollbacked.append(tr_id_lock)
             self.tr_manager.transactions[tr_id_lock].state = 'wait'
 
             # Remover conflitos com a transação que teve rollback
             self.tr_manager.conflicts = [x for x in self.tr_manager.conflicts if x[1] != tr_id_lock]
 
+            # Sinalizar que tr_id deve ser executada
+            self.tr_manager.transactions[tr_id].state = 'active'
+
             # Remove operações bem sucedidas da história e adiciona na lista de espera da transação tr_id_lock
             self.tr_manager.transactions[tr_id_lock].waiting = [x for x in self.tr_manager.history if x[1] == tr_id_lock]
             self.tr_manager.history = [x for x in self.tr_manager.history if x[1] != tr_id_lock]
 
-            return 'ROLLBACK2', "T" + tr_id_lock + " ROLLBACKED" + "\n"
+            return 'ROLLBACK2', "T" + tr_id_lock + " ROLLBACKED"
 
         else:
             # tr_id é mais nova que tr_id_lock
@@ -216,21 +226,22 @@ class Lock_Manager:
         # lock = (modo bloqueio, tr_id) ou None(sem bloqueio)
         lock = self.checkLock(it_data)
 
-        self.getLockTable()
-
+        #print(op, lock)
         if lock:
             modo_block = lock[0]
             tr_id_lock = lock[1]
             if modo_block == 'S':
                 # D.bloqueio = 'S'
+                self.getLockTable()
                 self.Lock_Table.append((it_data, 'S', tr_id))
+                self.saveLockTable()
             elif modo_block == 'X':
                 # D.bloqueio = 'X'
 
                 # Caso a transacao T em questão já possua um LX, não gera conflito (TODO:ISSO ESTÁ CERTO?)
                 conflict = ""
                 if tr_id_lock != tr_id:
-                    conflict = (tr_id_lock, tr_id)
+                    conflict = (tr_id, tr_id_lock)
 
                     # Adicionar conflito à lista de conflitos
                     if self.newConflict(conflict):
@@ -239,19 +250,19 @@ class Lock_Manager:
                         extra += "DEADLOCK iminente na operação " + str(n_op+1), "    " + graph + "\n"
                         
 
-                if method == 'wait-die':
-                    r1, r2 = self.waitDie(tr_id, tr_id_lock, it_data, op, conflict)
-                    return r1, extra + r2
+                    if method == 'wait-die':
+                        r1, r2 = self.waitDie(tr_id, tr_id_lock, it_data, op, conflict)
+                        return r1, extra + r2
 
-                elif method == 'wound-wait':
-                    r1, r2 = self.woundWait(tr_id, tr_id_lock, it_data, op, conflict)
-                    return r1, extra + r2
+                    elif method == 'wound-wait':
+                        r1, r2 = self.woundWait(tr_id, tr_id_lock, it_data, op, conflict)
+                        return r1, extra + r2
 
         else:
             # D.bloqueio = 'U'
+            self.getLockTable()
             self.Lock_Table.append((it_data, 'S', tr_id))
-
-        self.saveLockTable()
+            self.saveLockTable()
 
         return 'OK', None
    
@@ -265,8 +276,7 @@ class Lock_Manager:
         # lock = (modo bloqueio, tr_id) ou None(sem bloqueio)
         lock = self.checkLock(it_data)
 
-        self.getLockTable()
-
+        #print(op, lock)
         if lock:
             modo_block = lock[0]
             tr_id_lock = lock[1]
@@ -276,7 +286,7 @@ class Lock_Manager:
                 # Caso a transacao T em questão já possua um LS, não gera conflito (TODO: ISSO ESTÁ CERTO?)
                 conflict = ""
                 if tr_id_lock != tr_id:
-                    conflict = (tr_id_lock, tr_id)
+                    conflict = (tr_id, tr_id_lock)
 
                     if self.newConflict(conflict):
                         # A requisição causará um ciclo de conflitos (deadlock)
@@ -285,15 +295,17 @@ class Lock_Manager:
 
                     if method == 'wait-die':
                         r1, r2 = self.waitDie(tr_id, tr_id_lock, it_data, op, conflict)
-                        return r1, extra + r2 if r1 == 'ROLLBACK' else r2
+                        return r1, extra + r2 if r1 == 'ROLLBACK' or r1 == 'ROLLBACK2' else r2
 
                     elif method == 'wound-wait':
                         r1, r2 = self.woundWait(tr_id, tr_id_lock, it_data, op, conflict)
-                        return r1, extra + r2 if r1 == 'ROLLBACK' else r2
+                        return r1, extra + r2 if r1 == 'ROLLBACK' or r1 == 'ROLLBACK2' else r2
                         
                 else:
+                    self.getLockTable()
                     self.Lock_Table = [x for x in self.Lock_Table if x[0] != it_data ]
                     self.Lock_Table.append((it_data, 'X', tr_id))
+                    self.saveLockTable()
 
             elif modo_block == 'X':
                 # D.bloqueio = 'X'
@@ -301,7 +313,7 @@ class Lock_Manager:
                 # Caso a transacao T em questão já possua um LX, não gera conflito (TODO: ISSO ESTÁ CERTO?)
                 conflict = ""
                 if tr_id_lock != tr_id:
-                    conflict = (tr_id_lock, tr_id)
+                    conflict = (tr_id, tr_id_lock)
 
                     if self.newConflict(conflict):
                         # A requisição causará um ciclo de conflitos (deadlock)
@@ -311,17 +323,17 @@ class Lock_Manager:
 
                 if method == 'wait-die':
                     r1, r2 = self.waitDie(tr_id, tr_id_lock, it_data, op, conflict)
-                    return r1, extra + r2 if r1 == 'ROLLBACK' else r2
+                    return r1, extra + r2 if r1 == 'ROLLBACK' or r1 == 'ROLLBACK2' else r2
 
                 elif method == 'wound-wait':
                     r1, r2 = self.woundWait(tr_id, tr_id_lock, it_data, op, conflict)
-                    return r1, extra + r2 if r1 == 'ROLLBACK' else r2
+                    return r1, extra + r2 if r1 == 'ROLLBACK' or r1 == 'ROLLBACK2' else r2
 
         else:
             # D.bloqueio = 'U'
+            self.getLockTable()
             self.Lock_Table.append((it_data, 'X', tr_id))
-
-        self.saveLockTable()
+            self.saveLockTable()
 
         return 'OK', None
 
@@ -348,7 +360,9 @@ class Lock_Manager:
         return None
     
     def removeFromLockTable(self, index):
+        self.getLockTable()
         element = self.Lock_Table.pop(int(index))
+        self.saveLockTable()
         return element
 
 
@@ -394,10 +408,7 @@ def clearLockTable():
     f.write("")
     f.close()
 
-# Executar transações em espera
-def executeWaiting(lock_manager):
-    toRemove = []
-    extraOutput = ""
+def executeWaiting(lock_manager, method):
     for tr in lock_manager.tr_manager.curWaiting:
         # Se a transação ainda estiver em conflito, não executar
         for conf in lock_manager.tr_manager.conflicts:
@@ -407,58 +418,58 @@ def executeWaiting(lock_manager):
         # Transação agora volta a estar ativa sem espera
         lock_manager.tr_manager.transactions[tr].state = 'active'
 
-        wasRollbacked = False
-        if tr in lock_manager.tr_manager.rollbacked:
-            wasRollbacked = True
-            for conf in lock_manager.tr_manager.conflicts:
-                if conf[0] == tr:
-                    # Transação rollbacked ainda precisa esperar liberação de bloqueio de outra transação
-                    continue
+        # Remover da lista de transações em espera
+        lock_manager.tr_manager.curWaiting = [x for x in lock_manager.tr_manager.curWaiting if x != tr]
 
-        extraOutput += "A ser reexecutado de T" if wasRollbacked else "Executado de T"
-        extraOutput += tr + ": " + formatHistory([x for x in lock_manager.tr_manager.transactions[tr].waiting if x[0] != 'BT'])
-        extraOutput += "\n" if not wasRollbacked else ""
+        # Recuperar lista de operações em espera de tr
+        waitingList = lock_manager.tr_manager.transactions[tr].waiting
 
-        # transação não está mais em espera
-        lock_manager.tr_manager.transactions[tr].state = 'active'
-        if ('C', tr) in lock_manager.tr_manager.transactions[tr].waiting:
-            # Remover bloqueios para transação commitada com sucesso
-            lock_manager.getLockTable()
-            lock_manager.Lock_Table = [x for x in lock_manager.Lock_Table if x[2] != tr]
-            lock_manager.saveLockTable()
-
-            # Reativar transações que estavam em conflito por causa de tr
-            trsToActive = [x[0] for x in lock_manager.tr_manager.conflicts if x[1] == tr]
-            for trActive in trsToActive:
-                lock_manager.tr_manager.transactions[trActive].state = 'active'
-
-            # Remover conflitos de origem em tr
-            lock_manager.tr_manager.conflicts = [x for x in lock_manager.tr_manager.conflicts if x[1] != tr]
-
-            # Alternar tr_id para estado finalizado
-            lock_manager.tr_manager.transactions[tr].state = 'DONE'
-
-        toRemove.append(tr)
-
-        # Limpar lista de operações em espera da transação tr
+        # Esvaziar lista de operações em espera de tr
         lock_manager.tr_manager.transactions[tr].waiting = []
+        
+        # Executar operações em espera
+        execute(lock_manager.tr_manager, lock_manager, waitingList, method, label='E')
 
-    # Tirar transação da fila de espera
-    lock_manager.tr_manager.curWaiting = [x for x in lock_manager.tr_manager.curWaiting if x not in toRemove]
-    # Também tirar transação da fila de rollbackeds, se for o caso
-    if wasRollbacked:
-        lock_manager.tr_manager.rollbacked = [x for x in lock_manager.tr_manager.rollbacked if x not in toRemove]
+def executeRollbacked(lock_manager, method):
+    for tr in lock_manager.tr_manager.rollbacked:
+        # Se a transação ainda estiver em conflito, não executar
+        for conf in lock_manager.tr_manager.conflicts:
+            if conf[0] == tr:
+                continue
+        
+        # Transação agora volta a estar ativa sem espera
+        lock_manager.tr_manager.transactions[tr].state = 'active'
 
-    return extraOutput
+        # Remover da lista de transações rollbacked
+        lock_manager.tr_manager.rollbacked = [x for x in lock_manager.tr_manager.rollbacked if x != tr]
 
+        # Remover operação de criar transação (Usar mesmo Timestamp)
+        lock_manager.tr_manager.transactions[tr].waiting = [x for x in lock_manager.tr_manager.transactions[tr].waiting if x[0] != 'BT']
+
+        # Recuperar lista de operações em espera de tr
+        waitingList = lock_manager.tr_manager.transactions[tr].waiting
+
+        # Esvaziar lista de operações em espera de tr
+        lock_manager.tr_manager.transactions[tr].waiting = []
+        
+        # Executar operações em espera
+        execute(lock_manager.tr_manager, lock_manager, waitingList, method, label='R')
+
+def printOperation(lock_manager, op, n_op, tr_id, label, response):
+    lb = str(n_op+1) if label is None else label + "T" + tr_id
+    if DEBUG:
+        lock_manager.getLockTable()
+        print(lb + ": ", formatHistory([op]), response, lock_manager.formatGraph(), "      Lock Table: ", lock_manager.Lock_Table, "      Wait_Q: ", lock_manager.Wait_Q)
+        lock_manager.saveLockTable()
+    else:
+        print(lb + ": ", formatHistory([op]), response, lock_manager.formatGraph())
+        
 # Técnica de prevenção Wait-Die
-def execute(tr_manager, lock_manager, operations, method):
+def execute(tr_manager, lock_manager, operations, method, label=None):
     
     for n_op, op in enumerate(operations):
-
         response = 'OK'
         graph = ""
-        extraOutput = ""
         op_type = op[0]
         tr_id = op[1]
         it_data = op[2] if len(op) > 2 else None
@@ -479,14 +490,19 @@ def execute(tr_manager, lock_manager, operations, method):
                     tr_manager.history.append(op)
                 elif response == 'POSTERGADA':
                     graph = lock_manager.formatGraph(extra)
-                    lock_manager.tr_manager.transactions[tr_id].waiting.append(op)
                 elif response == 'ROLLBACK' or response == 'ROLLBACK2':
-                    # Tentar executar transações em espera
+                    # Saída antecipada da operação
                     response = 'OK' if response == 'ROLLBACK2' else response
-                    extraOutput = extra + executeWaiting(lock_manager)
+                    printOperation(lock_manager, op, n_op, tr_id, label, response)
+                    if extra != "":
+                        print(extra)
+                    # Tentar executar transações em espera
+                    executeWaiting(lock_manager, method)
 
+                    continue
             elif trState == 'wait':
                 # Caso o estado da transação esteja em espera, postergar
+                response = 'POSTERGADA'
                 lock_manager.tr_manager.transactions[tr_id].waiting.append(op)
 
         elif op_type == 'w':
@@ -501,14 +517,18 @@ def execute(tr_manager, lock_manager, operations, method):
                     tr_manager.history.append(op)
                 elif response == 'POSTERGADA':
                     graph = lock_manager.formatGraph(extra)
-                    lock_manager.tr_manager.transactions[tr_id].waiting.append(op)
                 elif response == 'ROLLBACK' or response == 'ROLLBACK2':
-                    # Tentar executar transações em espera
+                    # Saída antecipada da operação
                     response = 'OK' if response == 'ROLLBACK2' else response
-                    extraOutput = extra + executeWaiting(lock_manager)
-
+                    printOperation(lock_manager, op, n_op, tr_id, label, response)
+                    if extra != "":
+                        print(extra)
+                    # Tentar executar transações em espera
+                    executeWaiting(lock_manager, method)
+                    continue
             elif trState == 'wait':
                 # Caso o estado da transação esteja em espera, postergar
+                response = 'POSTERGADA'
                 lock_manager.tr_manager.transactions[tr_id].waiting.append(op)
 
         elif op_type == 'C':
@@ -529,22 +549,25 @@ def execute(tr_manager, lock_manager, operations, method):
                 lock_manager.tr_manager.conflicts = [x for x in lock_manager.tr_manager.conflicts if x[1] != tr_id]
 
                 # Alternar tr_id para estado finalizado
-                lock_manager.tr_manager.transactions[tr_id].state = 'DONE'
+                lock_manager.tr_manager.transactions[tr_id].state = 'done'
 
+                # Saída antecipada da operação
+                printOperation(lock_manager, op, n_op, tr_id, label, response)
+
+                # Tentar executar transações em espera
+                executeWaiting(lock_manager, method)
+
+                # Tentar reiniciar transações rollbacked
+                executeRollbacked(lock_manager, method)
+                continue
             elif trState == 'wait':
                 # Caso o estado da transação esteja em espera, postergar
                 response = 'POSTERGADA'
                 lock_manager.tr_manager.transactions[tr_id].waiting.append(op)
-            
-        if DEBUG:
-            lock_manager.getLockTable()
-            print(n_op+1, ": ", formatHistory([op]), response, graph, "      Lock Table: ", lock_manager.Lock_Table, "      Wait_Q: ", lock_manager.Wait_Q)
-        else:
-            print(n_op+1, ": ", formatHistory([op]), response, graph)
+        
+        printOperation(lock_manager, op, n_op, tr_id, label, response)
 
-        if extraOutput != "":
-            print(extraOutput)
-
+        
 def formatOperations(operations):
     for i, op in enumerate(operations):
         if len(op) > 2:
@@ -571,8 +594,6 @@ def main():
 
     print("Entrada:")
     formatOperations(operations)
-
-    print("\nOBS: O grafo de transações é apresentado à medida que sofre modificações")
 
     # WAIT-DIE
     clearLockTable()
