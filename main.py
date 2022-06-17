@@ -1,5 +1,5 @@
 
-INPUT_FILE = "caio.txt"
+INPUT_FILE = "deadlock.txt"
 LOCK_TABLE_FILE = "lock_table.txt"
 DEBUG = False
 
@@ -251,7 +251,7 @@ class Lock_Manager:
                     # Adicionar conflito à lista de conflitos
                     if self.newConflict(conflict):
                         # A requisição causará um ciclo de conflitos (deadlock)
-                        graph = self.formatGraph(conflict)
+                        graph = self.formatGraph([conflict])
                         extra += "DEADLOCK iminente na operação " + str(n_op+1), "    " + graph + "\n"
                         
                     if method == 'wait-die':
@@ -308,7 +308,7 @@ class Lock_Manager:
 
                             if self.newConflict(conflict):
                                 # A requisição causará um ciclo de conflitos (deadlock)
-                                graph = self.formatGraph(conflict)
+                                graph = self.formatGraph([conflict])
                                 extra += "DEADLOCK iminente na operação " + str(n_op+1) + "    " + graph + "\n"
 
                             if method == 'wait-die':
@@ -341,7 +341,7 @@ class Lock_Manager:
 
                     if self.newConflict(conflict):
                         # A requisição causará um ciclo de conflitos (deadlock)
-                        graph = self.formatGraph(conflict)
+                        graph = self.formatGraph([conflict])
                         extra += "DEADLOCK iminente na operação " + str(n_op+1) + "    " + graph + "\n"
                         
 
@@ -513,7 +513,8 @@ def execute(tr_manager, lock_manager, operations, method, label=None):
                 if response == 'OK':
                     tr_manager.history.append(op)
                 elif response == 'POSTERGADA':
-                    graph = lock_manager.formatGraph(extra)
+                    pass
+                    #graph = lock_manager.formatGraph(extra)
                 elif response == 'ROLLBACK' or response == 'ROLLBACK2':
                     # Saída antecipada da operação
                     response = 'OK' if response == 'ROLLBACK2' else response
