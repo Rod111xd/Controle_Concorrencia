@@ -142,7 +142,6 @@ class Lock_Manager:
             self.saveLockTable()
 
             # Guarda a informação de que tr_id teve Rollback
-            #self.tr_manager.curWaiting.append(tr_id)
             self.tr_manager.rollbacked.append(tr_id)
             self.tr_manager.transactions[tr_id].state = 'wait'
             
@@ -176,7 +175,6 @@ class Lock_Manager:
             self.saveLockTable()
 
             # Guarda a informação de que tr_id_lock teve Rollback
-            #self.tr_manager.curWaiting.append(tr_id_lock)
             self.tr_manager.rollbacked.append(tr_id_lock)
             self.tr_manager.transactions[tr_id_lock].state = 'wait'
 
@@ -487,7 +485,21 @@ def printOperation(lock_manager, op, n_op, tr_id, label, response):
         lock_manager.saveLockTable()
     else:
         print(lb + ": ", formatHistory([op]), response, lock_manager.formatGraph())
-        
+
+def formatWaitQ(lock_manager, it_data):
+    try:
+        lock_manager.Wait_Q[it_data]
+    except:
+        lock_manager.Wait_Q[it_data] = []
+    out = "Wait_Q[" + it_data + "] = {"
+    size = len(lock_manager.Wait_Q[it_data])
+    for i, it in enumerate(lock_manager.Wait_Q[it_data]):
+        out += "(" + it[0] + "," + it[1] + ")"
+        if i+1 != size:
+            out += ", "
+    out += "}"
+    return out
+
 # Técnica de prevenção Wait-Die
 def execute(tr_manager, lock_manager, operations, method, label=None):
     
@@ -523,6 +535,7 @@ def execute(tr_manager, lock_manager, operations, method, label=None):
                     printOperation(lock_manager, op, n_op, tr_id, label, response)
                     if extra != "":
                         print(extra)
+                        print(formatWaitQ(lock_manager, it_data))
                     # Tentar executar transações em espera
                     executeWaiting(lock_manager, method)
 
@@ -553,6 +566,7 @@ def execute(tr_manager, lock_manager, operations, method, label=None):
                     printOperation(lock_manager, op, n_op, tr_id, label, response)
                     if extra:
                         print("\n".join(extra))
+                        print(formatWaitQ(lock_manager, it_data))
                     # Tentar executar transações em espera
                     executeWaiting(lock_manager, method)
                     continue
@@ -630,6 +644,11 @@ def main():
     print("Entrada:")
     formatOperations(operations)
 
+    print("\nLegenda")
+    print("ETX: executando operações da transação em espera TX")
+    print("RTX: reexecutando operações da transação rollbacked TX")
+    print("Obs: A lista de espera para um item de dado é mostrada em casos de rollback")
+
     # WAIT-DIE
     clearLockTable()
     tr_manager = Tr_Manager()
@@ -646,6 +665,7 @@ def main():
     execute(tr_manager, lock_manager, operations.copy(), 'wound-wait')
     print("História: ", formatHistory(tr_manager.history))
 
+    print()
 
 
 main()
