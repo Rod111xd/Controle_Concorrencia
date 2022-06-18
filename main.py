@@ -518,6 +518,8 @@ def execute(tr_manager, lock_manager, operations, method, label=None):
                 elif response == 'ROLLBACK' or response == 'ROLLBACK2':
                     # Saída antecipada da operação
                     response = 'OK' if response == 'ROLLBACK2' else response
+                    if response == 'OK':
+                        tr_manager.history.append(op)
                     printOperation(lock_manager, op, n_op, tr_id, label, response)
                     if extra != "":
                         print(extra)
@@ -546,6 +548,8 @@ def execute(tr_manager, lock_manager, operations, method, label=None):
                 elif response == 'ROLLBACK' or response == 'ROLLBACK2':
                     # Saída antecipada da operação
                     response = 'OK' if response == 'ROLLBACK2' else response
+                    if response == 'OK':
+                        tr_manager.history.append(op)
                     printOperation(lock_manager, op, n_op, tr_id, label, response)
                     if extra:
                         print("\n".join(extra))
@@ -559,9 +563,11 @@ def execute(tr_manager, lock_manager, operations, method, label=None):
                 lock_manager.tr_manager.transactions[tr_id].waiting.append(op)
 
         elif op_type == 'C':
-
+            
             trState = lock_manager.tr_manager.transactions[tr_id].state
             if trState == 'active':
+                tr_manager.history.append(op)
+
                 # Caso o estado da transação esteja ativa (sem bloqueio), executar normalmente
                 lock_manager.getLockTable()
                 lock_manager.Lock_Table = [x for x in lock_manager.Lock_Table if x[2] != tr_id]
@@ -605,6 +611,8 @@ def formatOperations(operations):
 def formatHistory(history):
     out = ""
     for h in history:
+        if h[0] == 'BT':
+            continue
         if len(h) > 2:
             out += h[0] + h[1] + "(" + h[2] + ")" + "   "
         else:
@@ -628,6 +636,7 @@ def main():
     lock_manager = Lock_Manager(tr_manager)
     print("\nTécnica WAIT-DIE")
     execute(tr_manager, lock_manager, operations.copy(), 'wait-die')
+    print("História: ", formatHistory(tr_manager.history))
 
     # WOUND-WAIT
     clearLockTable()
@@ -635,6 +644,7 @@ def main():
     lock_manager = Lock_Manager(tr_manager)
     print("\nTécnica WOUND-WAIT")
     execute(tr_manager, lock_manager, operations.copy(), 'wound-wait')
+    print("História: ", formatHistory(tr_manager.history))
 
 
 
