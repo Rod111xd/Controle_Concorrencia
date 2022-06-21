@@ -215,8 +215,8 @@ class Lock_Manager:
 
             if not isTrWaiting:
                 # Transação acabou de mudar para o estado 'wait'
-                return 'POSTERGADA', conflict
-            return 'POSTERGADA', None
+                return 'POSTERGADA', ""
+            return 'POSTERGADA', ""
 
 
     # LS(tr, D) - Solicitar bloqueio compartilhado
@@ -260,6 +260,11 @@ class Lock_Manager:
                         r1, r2 = self.woundWait(tr_id, tr_id_lock, it_data, op, conflict)
                         return r1, extra + r2
 
+                else:
+                    self.getLockTable()
+                    self.Lock_Table = [x for x in self.Lock_Table if not (it_data == x[0] and x[2] == tr_id) ]
+                    self.Lock_Table.append((it_data, 'S', tr_id))
+                    self.saveLockTable()
         else:
             # D.bloqueio = 'U'
             self.getLockTable()
@@ -594,6 +599,10 @@ def execute(tr_manager, lock_manager, operations, method, label=None):
 
                 # Remover conflitos de origem em tr_id
                 lock_manager.tr_manager.conflicts = [x for x in lock_manager.tr_manager.conflicts if x[1] != tr_id]
+
+                # Remover ocorrencia da transação na Wait_Q dos itens de dados
+                for key, value in lock_manager.Wait_Q.items():
+                    lock_manager.Wait_Q[key] = [x for x in lock_manager.Wait_Q[key] if x[0] != tr_id]
 
                 # Alternar tr_id para estado finalizado
                 lock_manager.tr_manager.transactions[tr_id].state = 'done'
